@@ -11,8 +11,9 @@ require("codemirror/addon/selection/mark-selection.js");
 require("codemirror/mode/gfm/gfm.js");
 require("codemirror/mode/xml/xml.js");
 var CodeMirrorSpellChecker = require("codemirror-spell-checker");
-var marked = require("marked");
-
+//var marked = require("marked");
+var markdownit = require("markdown-it")();
+var $ = require("jquery");
 
 // Some variables
 var isMac = /Mac/.test(navigator.platform);
@@ -732,6 +733,8 @@ function toggleSideBySide(editor) {
 		);
 		toolbarButton.className = toolbarButton.className.replace(/\s*active\s*/g, "");
 		wrapper.className = wrapper.className.replace(/\s*CodeMirror-sided\s*/g, " ");
+		cm.off("scroll", editor.options.syncResToSrc);
+		$(preview).off("scroll");
 	} else {
 		// When the preview button is clicked for the first time,
 		// give some time for the transition from editor.css to fire and the view to slide from right to left,
@@ -740,10 +743,29 @@ function toggleSideBySide(editor) {
 			if(!cm.getOption("fullScreen"))
 				toggleFullScreen(editor);
 			preview.className += " editor-preview-active-side";
+			// custom
+			preview.setAttribute("id", "display-area");
 		}, 1);
 		toolbarButton.className += " active";
 		wrapper.className += " CodeMirror-sided";
 		useSideBySideListener = true;
+		cm.on("scroll", editor.options.syncSrcToRes);
+		$(preview).on("scroll", function() {
+			editor.options.syncResToSrc(cm);
+		});
+		$(wrapper).on("mouseover", function() {
+			$(preview).off("scroll");
+			cm.on("scroll", editor.options.syncSrcToRes);
+		});
+		$(wrapper).on("mouseout", function() {
+			cm.off("scroll", editor.options.syncSrcToRes);
+		});
+		$(preview).on("mouseover", function() {
+			cm.off("scroll", editor.options.syncSrcToRes);
+			$(preview).on("scroll", function() {
+				editor.options.syncResToSrc(cm);
+			});
+		});
 	}
 
 	// Hide normal preview if active
@@ -789,7 +811,7 @@ function togglePreview(editor) {
 	var preview = wrapper.lastChild;
 	if(!preview || !/editor-preview/.test(preview.className)) {
 		preview = document.createElement("div");
-		preview.className = "editor-preview";
+		preview.className = "editor-preview markdown-display";
 		wrapper.appendChild(preview);
 	}
 	if(/editor-preview-active/.test(preview.className)) {
@@ -924,7 +946,6 @@ function _toggleHeading(cm, direction, size) {
 	}
 	cm.focus();
 }
-
 
 function _toggleLine(cm, name) {
 	if(/editor-preview-active/.test(cm.getWrapperElement().lastChild.className))
@@ -1114,6 +1135,189 @@ function extend(target) {
 
 	return target;
 }
+
+/**
+ * start custom func 
+ */
+function _myThrottle(func, idle) {
+	var lastCall = 0;
+	return function() {
+		var ctx = this,
+			args = arguments;
+		var now = Date.now();
+		if(now - lastCall > idle) {
+			func.apply(ctx, args);
+			lastCall = now;
+		}
+	};
+}
+
+// 这个是粘贴过来的,
+function injectLineNumbers(tokens, idx, options, env, slf) {
+	if(tokens[idx].map && tokens[idx].level === 0) {
+		var line = tokens[idx].map[0];
+		tokens[idx].attrJoin("class", "line");
+		tokens[idx].attrSet("data-line", String(line));
+	}
+	return slf.renderToken(tokens, idx, options, env, slf);
+}
+
+function buildScrollMap(v) {
+	var lineHeightMap = [],
+		scrollMap = [],
+		nonEmptyList = [],
+		i, mirror = v;
+	var $target = $("#display-area");
+	var offset = $target.scrollTop() - $target.offset().top;
+	var lineCount = mirror.doc.lineCount();
+
+	/**
+	 * 因为 SimpleMDE 在某些情况下会隐藏工具栏，排除工具栏可见与否对布局的干扰
+	 */
+	var firstLine, firstLineHeight;
+	if(mirror.heightAtLine(0) == 135) {
+		firstLine = 1;
+		firstLineHeight = mirror.heightAtLine(1);
+	} else {
+		firstLine = 0;
+		firstLineHeight = mirror.heightAtLine(0);
+	}
+	/**
+	 * lineHeightMap[i] 第i行的顶部到编辑区顶点的距离, 如果把每一行看作一个独立的div的话，那lineHeight[i] 就相当于offsetTop
+	 * 由于编辑区顶部插入图标的缘故，第0行空了出来
+	 */
+	for(i = firstLine; i <= lineCount; i++) {
+		lineHeightMap.push(Math.floor(mirror.heightAtLine(i) - firstLineHeight));
+	}
+	/**
+	 * scrollMap[i] 第i个解析行到display区顶部的距离, 即$ele.offset().top() - $target.offset().top() + $target.scrollTop()
+	 */
+	for(i = 0; i <= lineCount; i++) {
+		scrollMap.push(-1);
+	}
+	/**
+	 * nonEmptyList[i] 设置滚动的标记， 以第一行为起点
+	 */
+	nonEmptyList.push(0);
+	scrollMap[0] = 0;
+	$(".line").each(function(index, ele) {
+		var $ele = $(ele);
+		/**
+		 * 因为markdownit是从line0开始了，行号加一进行修补
+		 */
+		var _line = Number($ele.data("line"));
+		if(_line != 0) nonEmptyList.push(_line);
+		scrollMap[_line] = Math.floor($ele.offset().top + offset);
+	});
+	scrollMap[lineCount] = $target[0].scrollHeight;
+	if(nonEmptyList[nonEmptyList.length - 1] != lineCount) {
+		nonEmptyList.push(lineCount);
+	}
+
+	var pos = 0;
+	for(i = 1; i <= lineCount; i++) {
+		if(scrollMap[i] != -1) {
+			pos++;
+			continue;
+		}
+		var a = nonEmptyList[pos];
+		var b = nonEmptyList[pos + 1];
+		scrollMap[i] = Math.floor((scrollMap[b] * (i - a) + scrollMap[a] * (b - i)) / (b - a));
+	}
+	// scrollmap[0]
+	scrollMap[0] = 0;
+
+	return {
+		lineHeightMap: lineHeightMap,
+		scrollMap: scrollMap
+	};
+}
+
+// 绑定事件监听器
+function syncResToSrc(v) {
+	var $target = $("#display-area");
+	var scrollHeight = $target[0].scrollHeight;
+	var scrollTop = $target.scrollTop();
+	var height = $target.height() + parseInt($target.css("padding-top")) + parseInt($target.css("padding-bottom"));
+	var offsetPercent = scrollTop / (scrollHeight - height);
+	var viewportOffset = height * offsetPercent;
+	var offset = scrollTop + viewportOffset;
+	var smap = buildScrollMap(v);
+	var lineHeightMap = smap.lineHeightMap;
+	var scrollMap = smap.scrollMap;
+	var pos, i, lineCount = lineHeightMap.length;
+	for(i = 0; i <= lineCount; i++) {
+		if(scrollMap[i] > offset) {
+			pos = i - 1;
+			break;
+		}
+	}
+	if(offset >= scrollMap[scrollMap.length - 1]) {
+		pos = scrollMap.length - 1;
+	}
+	if(pos > 0) {
+		var scrollInfo = v.getScrollInfo(v);
+		v.scrollTo(0, lineHeightMap[pos] - (1 - offsetPercent) * scrollInfo.clientHeight);
+	} else {
+		v.scrollTo(0, 0);
+	}
+}
+
+function syncSrcToRes(v) {
+	var pos = -1;
+	var smap = buildScrollMap(v);
+	var lineHeightMap = smap.lineHeightMap,
+		scrollMap = smap.scrollMap;
+
+	var scrollInfo = v.getScrollInfo();
+	var baseOffset = scrollInfo.top;
+	var offsetPercent = scrollInfo.top / (scrollInfo.height - scrollInfo.clientHeight);
+	var $target = $("#display-area");
+	var resOffset = $target.height() * (1 - offsetPercent);
+	/**
+	 * 修复滚动中不能滚动到底的bug
+	 */
+	var viewportOffset = scrollInfo.clientHeight * offsetPercent;
+	var offset = baseOffset + viewportOffset;
+	var lineCount = lineHeightMap.length,
+		i;
+	for(i = 0; i <= lineCount; i++) {
+		if(lineHeightMap[i] >= offset) {
+			pos = i > 0 ? i - 1 : 0;
+			break;
+		}
+	}
+	if(pos == -1) {
+		pos = scrollMap.length - 1;
+	}
+	$target.scrollTop(scrollMap[pos] - resOffset);
+}
+
+function syncSrcToResDefault(v) {
+	var wrapper = v.getWrapperElement();
+	var preview = wrapper.nextSibling;
+	if(!/editor-preview-active-side/.test(preview.className))
+		return;
+	var height = v.getScrollInfo().height - v.getScrollInfo().clientHeight;
+	var ratio = parseFloat(v.getScrollInfo().top) / height;
+	var move = (preview.scrollHeight - preview.clientHeight) * ratio;
+	preview.scrollTop = move;
+}
+
+function syncResToSrcDefault(v) {
+	var wrapper = v.getWrapperElement();
+	var preview = wrapper.nextSibling;
+	if(!/editor-preview-active-side/.test(preview.className))
+		return;
+	var height = preview.scrollHeight - preview.clientHeight;
+	var ratio = parseFloat(preview.scrollTop) / height;
+	var move = (v.getScrollInfo().height - v.getScrollInfo().clientHeight) * ratio;
+	v.scrollTo(0, move);
+}
+
+/**
+ * end custom func
+ */
 
 /* The right word count in respect for CJK. */
 function wordCount(data) {
@@ -1405,6 +1609,11 @@ function SimpleMDE(options) {
 			// Note: "this" refers to the options object
 			return this.parent.markdown(plainText);
 		};
+		options.syncResToSrc = _myThrottle(syncResToSrc, 50);
+		options.syncSrcToRes = _myThrottle(syncSrcToRes, 50);
+	} else {
+		options.syncResToSrc = _myThrottle(syncResToSrcDefault, 50);
+		options.syncSrcToRes = _myThrottle(syncSrcToResDefault, 50);
 	}
 
 
@@ -1457,44 +1666,51 @@ function SimpleMDE(options) {
  * Default markdown render.
  */
 SimpleMDE.prototype.markdown = function(text) {
-	if(marked) {
-		// Initialize
-		var markedOptions;
-		if(this.options && this.options.renderingConfig && this.options.renderingConfig.markedOptions) {
-			markedOptions = this.options.renderingConfig.markedOptions;
-		} else {
-			markedOptions = {};
-		}
-
-		// Update options
-		if(this.options && this.options.renderingConfig && this.options.renderingConfig.singleLineBreaks === false) {
-			markedOptions.breaks = false;
-		} else {
-			markedOptions.breaks = true;
-		}
-
-		if(this.options && this.options.renderingConfig && this.options.renderingConfig.codeSyntaxHighlighting === true) {
-
-			/* Get HLJS from config or window */
-			var hljs = this.options.renderingConfig.hljs || window.hljs;
-
-			/* Check if HLJS loaded */
-			if(hljs) {
-				markedOptions.highlight = function(code) {
-					return hljs.highlightAuto(code).value;
-				};
-			}
-		}
-
-
-		// Set options
-		marked.setOptions(markedOptions);
-
-
-		// Return
-		return marked(text);
+	if(markdownit) {
+		markdownit.renderer.rules.paragraph_open = markdownit.renderer.rules.heading_open = markdownit.renderer.rules.ordered_list_open = markdownit.renderer.rules.bullet_list_open = markdownit.renderer.rules.table_open = injectLineNumbers;
+		return markdownit.render(text);
 	}
 };
+
+//SimpleMDE.prototype.markdown = function(text) {
+//	if(marked) {
+//		// Initialize
+//		var markedOptions;
+//		if(this.options && this.options.renderingConfig && this.options.renderingConfig.markedOptions) {
+//			markedOptions = this.options.renderingConfig.markedOptions;
+//		} else {
+//			markedOptions = {};
+//		}
+
+//		// Update options
+//		if(this.options && this.options.renderingConfig && this.options.renderingConfig.singleLineBreaks === false) {
+//			markedOptions.breaks = false;
+//		} else {
+//			markedOptions.breaks = true;
+//		}
+
+//		if(this.options && this.options.renderingConfig && this.options.renderingConfig.codeSyntaxHighlighting === true) {
+
+//			/* Get HLJS from config or window */
+//			var hljs = this.options.renderingConfig.hljs || window.hljs;
+
+//			/* Check if HLJS loaded */
+//			if(hljs) {
+//				markedOptions.highlight = function(code) {
+//					return hljs.highlightAuto(code).value;
+//				};
+//			}
+//		}
+
+
+// Set options
+//		marked.setOptions(markedOptions);
+
+
+// Return
+//		return marked(text);
+//	}
+//};
 
 /**
  * Render editor to the given element.
@@ -1695,37 +1911,9 @@ SimpleMDE.prototype.createSideBySide = function() {
 
 	if(!preview || !/editor-preview-side/.test(preview.className)) {
 		preview = document.createElement("div");
-		preview.className = "editor-preview-side";
+		preview.className = "editor-preview-side markdown-display";
 		wrapper.parentNode.insertBefore(preview, wrapper.nextSibling);
 	}
-
-	// Syncs scroll  editor -> preview
-	var cScroll = false;
-	var pScroll = false;
-	cm.on("scroll", function(v) {
-		if(cScroll) {
-			cScroll = false;
-			return;
-		}
-		pScroll = true;
-		var height = v.getScrollInfo().height - v.getScrollInfo().clientHeight;
-		var ratio = parseFloat(v.getScrollInfo().top) / height;
-		var move = (preview.scrollHeight - preview.clientHeight) * ratio;
-		preview.scrollTop = move;
-	});
-
-	// Syncs scroll  preview -> editor
-	preview.onscroll = function() {
-		if(pScroll) {
-			pScroll = false;
-			return;
-		}
-		cScroll = true;
-		var height = preview.scrollHeight - preview.clientHeight;
-		var ratio = parseFloat(preview.scrollTop) / height;
-		var move = (cm.getScrollInfo().height - cm.getScrollInfo().clientHeight) * ratio;
-		cm.scrollTo(0, move);
-	};
 	return preview;
 };
 

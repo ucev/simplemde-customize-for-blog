@@ -238,6 +238,7 @@
     position: fixed;
     bottom: 0;
     width: 50%;
+    height: calc(100% - 50px) !important;
     top: 50px;
     right: 0;
     background: #fafafa;
@@ -257,6 +258,8 @@
     display: block
 }
 
+
+/*
 .editor-preview>p,
 .editor-preview-side>p {
     margin-top: 0
@@ -275,6 +278,7 @@
     border: 1px solid #ddd;
     padding: 5px;
 }
+*/
 
 .CodeMirror .CodeMirror-code .cm-tag {
     color: #63a35c;
