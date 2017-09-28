@@ -14,7 +14,7 @@
   "license": "MIT",
   "author": "ucev <zhangshuaiyf@icloud.com>",
   "bugs": {
-    "url": "https://github.com/NextStepWebs/simplemde-markdown-editor/issues"
+    "url": "https://github.com/ucev/simplemde-customize-for-blog/issues"
   },
   "dependencies": {
     "codemirror": "*",
@@ -41,6 +41,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/NextStepWebs/simplemde-markdown-editor"
+    "url": "https://github.com/ucev/simplemde-customize-for-blog"
   }
 }
